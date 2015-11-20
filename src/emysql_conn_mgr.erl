@@ -79,7 +79,7 @@ wait_for_connection(PoolId)->
 wait_for_connection(PoolId ,Timeout)->
     %% try to lock a connection. if no connections are available then
     %% wait to be notified of the next available connection
-    error_logger:info_msg("~p waits for connection to pool ~p~n", [self(), PoolId]),
+    %% error_logger:info_msg("~p waits for connection to pool ~p~n", [self(), PoolId]),
     case do_gen_call({lock_connection, PoolId, true, self()}) of
         unavailable ->
             error_logger:info_msg("~p is queued~n", [self()]),
@@ -94,7 +94,7 @@ wait_for_connection(PoolId ,Timeout)->
                 end
             end;
         Connection ->
-            error_logger:info_msg("~p gets connection~n", [self()]),
+            %% error_logger:info_msg("~p gets connection~n", [self()]),
             Connection
     end.
 

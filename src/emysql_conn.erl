@@ -197,7 +197,6 @@ open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
     %%error_logger:info_msg("~p open connection: ... connect ... ~n", [self()]),
     case gen_tcp:connect(Host, Port, [binary, {active, false}, {packet, raw}, {recbuf, ?TCP_RECV_BUFFER}], ConnectTimeout) of
         {ok, TCPSock} ->
-            io:format("~p tcpsock : ~p~n", [self(), TCPSock]),
             inet:setopts(TCPSock, [{active, false}]),
             #greeting {
                server_version = Version,
