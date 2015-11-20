@@ -100,6 +100,7 @@
 
 %% Life cycle API
 %% These are used to handle the life-cycle of the code base
+
 -export([   start/0, stop/0,
             add_pool/2,
             add_pool/9,
@@ -265,36 +266,23 @@ add_pool(PoolId, Options) when is_list(Options) ->
     StartCmds = proplists:get_value(start_cmds, Options, []),
     ConnectTimeout = proplists:get_value(connect_timeout, Options, infinity),
     Warnings = proplists:get_value(warnings, Options, false),
+    CACertFile = proplists:get_value(cacertfile, Options, undefined),
     add_pool(#pool{pool_id=PoolId,size=Size, user=User, password=Password,
-			  host=Host, port=Port, database=Database,
-			  encoding=Encoding, start_cmds=StartCmds, 
-			  connect_timeout=ConnectTimeout, warnings=Warnings}).
+                   host=Host, port=Port, database=Database,
+                   encoding=Encoding, start_cmds=StartCmds, 
+                   connect_timeout=ConnectTimeout, warnings=Warnings,
+                   cacertfile=CACertFile}).
 
-add_pool(#pool{pool_id=PoolId,size=Size,user=User,password=Password,host=Host,port=Port,
-		       database=Database,encoding=Encoding,start_cmds=StartCmds,
-		       connect_timeout=ConnectTimeout,warnings=Warnings}=PoolSettings)->
-    config_ok(PoolSettings),
+add_pool(#pool{pool_id=PoolId}=Pool)->
+    config_ok(Pool),
     case emysql_conn_mgr:has_pool(PoolId) of
         true -> 
             {error,pool_already_exists};
         false ->
-            Pool = #pool{
-                    pool_id = PoolId,
-                    size = Size,
-                    user = User,
-                    password = Password,
-                    host = Host,
-                    port = Port,
-                    database = Database,
-                    encoding = Encoding,
-                    start_cmds = StartCmds,
-                    connect_timeout = ConnectTimeout,
-                    warnings = Warnings
-                    },
             Pool2 = case emysql_conn:open_connections(Pool) of
-                {ok, Pool1} -> Pool1;
-                {error, Reason} -> throw(Reason)
-            end,
+                        {ok, Pool1} -> Pool1;
+                        {error, Reason} -> throw(Reason)
+                    end,
             emysql_conn_mgr:add_pool(Pool2)
     end.
 
@@ -771,6 +759,15 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
                 {error, FailedReset} ->
                     exit({connection_down, {and_conn_reset_failed, FailedReset}})
             end;
+        {'DOWN', Mref, process, Pid, ssl_connection_closed} ->
+            case emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection, keep) of
+                NewConnection when is_record(NewConnection, emysql_connection) ->
+                    %% re-loop, with new connection.
+                    [_ | OtherArgs] = Args,
+                    monitor_work(NewConnection, Timeout , [NewConnection | OtherArgs]);
+                {error, FailedReset} ->
+                    exit({connection_down, {and_conn_reset_failed, FailedReset}})
+            end;
         {'DOWN', Mref, process, Pid, Reason} ->
             %% if the process dies, reset the connection
             %% and re-throw the error on the current pid.
@@ -795,3 +792,4 @@ monitor_work(Connection0, Timeout, Args) when is_record(Connection0, emysql_conn
         emysql_conn:reset_connection(emysql_conn_mgr:pools(), Connection, pass),
         exit(mysql_timeout)
     end.
+

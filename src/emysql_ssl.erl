@@ -25,47 +25,28 @@
 %% FROM,  OUT OF OR IN CONNECTION WITH THE SOFTWARE  OR THE USE OR
 %% OTHER DEALINGS IN THE SOFTWARE.
 %% @private
--module(emysql_tcp).
--export([upgrade_to_ssl/2, send_packet/3, send_and_recv_packet/3, recv_packet/3, parse_response/4]).
+-module(emysql_ssl).
+-export([send_packet/3,send_and_recv_packet/3, recv_packet/3, parse_response/4]).
 
 -include("../include/emysql.hrl").
 -include("emysql_internal.hrl").
 
 -type packet_result() :: #eof_packet{} | #ok_packet{} | #result_packet{} | #error_packet{}.
 
--spec upgrade_to_ssl(Sock :: port(), Pool :: record(pool)) -> {ok, port()}.
-upgrade_to_ssl(Sock, Pool) ->
-    inet:setopts(Sock, [{active, false}]),
-    case ssl:connect(Sock, [
-                            {versions, [tlsv1]},
-                            {ciphers, ssl:cipher_suites(openssl)},
-                            {verify, verify_peer},
-                            {cacertfile, Pool#pool.cacertfile},
-                            {active, false}
-                           ], Pool#pool.connect_timeout) of
-        {ok, SSLSock} ->
-            SSLSock;
-        {error, Reason} ->
-            error_logger:error_msg("~p ", [process_info(self())]),
-            error_logger:error_msg("~p open connection (ssl): ... ERROR ~p~n", [self(), Reason]),
-            error_logger:error_msg("~p open connection (ssl): ... exit with failed_to_connect_to_database~n", [self()]),
-            exit({failed_to_upgrade_socket, Reason})
-    end.
-
 -spec send_packet(port, iodata(), integer()) -> ok | {error, closed}.
 send_packet(Sock, Packet, SeqNum) ->
-    case gen_tcp:send(Sock, [<<(size(Packet)):24/little, SeqNum:8>>, Packet]) of
+    case ssl:send(Sock, [<<(size(Packet)):24/little, SeqNum:8>>, Packet]) of
         ok -> ok;
         {error, closed} ->
             %% If we can't communicate on the socket since it has been closed, we exit the process
             %% at this point. The exit reason is caught by `emysql:monitor_work/3` and since it is
             %% with the atom `conn_tcp_closed` we special-case that and rehandle it properly
-            exit(tcp_connection_closed)
+            exit(ssl_connection_closed)
     end.
 
 -spec send_and_recv_packet(port(), iodata(), integer()) -> packet_result() | [packet_result()].
 send_and_recv_packet(Sock, Packet, SeqNum) ->
-    send_packet(Sock, Packet, SeqNum),
+    ok = send_packet(Sock, Packet, SeqNum),
     DefaultTimeout = emysql_app:default_timeout(),
     case response_list(Sock, DefaultTimeout, ?SERVER_MORE_RESULTS_EXIST) of
         %% This is a bit murky. It's compatible with former Emysql versions
@@ -105,13 +86,13 @@ parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<0:8, Rest/bin
          msg = unicode:characters_to_list(Msg) },
       ServerStatus, Buff };
 
-                                                % EOF: MySQL format <= 4.0, single byte. See -2-
+%% EOF: MySQL format <= 4.0, single byte. See -2-
 parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8>>}=_Packet, Buff) ->
     { #eof_packet{
          seq_num = SeqNum },
       ?SERVER_NO_STATUS, Buff };
 
-                                                % EOF: MySQL format >= 4.1, with warnings and status. See -2-
+%% EOF: MySQL format >= 4.1, with warnings and status. See -2-
 parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, WarningCount:16/little, ServerStatus:16/little>>}=_Packet, Buff) ->
     { #eof_packet{
          seq_num = SeqNum,
@@ -119,7 +100,7 @@ parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<?RESP_EOF:8, 
          warning_count = WarningCount },
       ServerStatus, Buff };
 
-                                                % ERROR response: MySQL format >= 4.1. See -3-
+%% ERROR response: MySQL format >= 4.1. See -3-
 parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, "#", SQLState:5/binary-unit:8, Msg/binary>>}=_Packet, Buff) ->
     { #error_packet{
          seq_num = SeqNum,
@@ -128,7 +109,7 @@ parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:
          msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
       ?SERVER_NO_STATUS, Buff };
 
-                                                % ERROR response: MySQL format <= 4.0. See -3-
+%% ERROR response: MySQL format <= 4.0. See -3-
 parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:16/little, Msg/binary>>}=_Packet, Buff) ->
     { #error_packet{
          seq_num = SeqNum,
@@ -137,7 +118,7 @@ parse_response(_Sock, _Timeout, #packet{seq_num = SeqNum, data = <<255:8, ErrNo:
          msg = binary_to_list(Msg) }, % todo: test and possibly conversion to UTF-8
       ?SERVER_NO_STATUS, Buff };
 
-                                                % DATA response.
+%% DATA response.
 parse_response(Sock, DefaultTimeout, #packet{seq_num = SeqNum, data = Data}=_Packet, Buff) ->
     {FieldCount, Rest1} = lcb(Data),
     {Extra, _} = lcb(Rest1),
@@ -159,7 +140,7 @@ parse_response(Sock, DefaultTimeout, #packet{seq_num = SeqNum, data = Data}=_Pac
 recv_packet_header(_Sock, _Timeout, <<PacketLength:24/little-integer, SeqNum:8/integer, Rest/binary>>) ->
     {PacketLength, SeqNum, Rest};
 recv_packet_header(Sock, Timeout, Buff) when erlang:byte_size(Buff) < 4 ->
-    case gen_tcp:recv(Sock, 0, Timeout) of
+    case ssl:recv(Sock, 0, Timeout) of
         {ok, Data} ->
             recv_packet_header(Sock, Timeout, <<Buff/binary, Data/binary>>);
         {error, Reason} ->
@@ -174,7 +155,7 @@ recv_packet_body(Sock, PacketLength, Timeout, Buff) ->
         <<Bin:PacketLength/binary, Rest/binary>> ->
             {Bin, Rest};
         _ when erlang:byte_size(Buff) < PacketLength ->
-            case gen_tcp:recv(Sock, 0, Timeout) of
+            case ssl:recv(Sock, 0, Timeout) of
                 {ok, Bin} ->
                     recv_packet_body(Sock, PacketLength , Timeout, <<Buff/binary, Bin/binary>>);
                 {error, Reason1} ->
@@ -227,7 +208,7 @@ recv_row_data(Socket, FieldList, DefaultTimeout, SeqNum, Buff) ->
 recv_row_data(Socket, FieldList, Timeout, SeqNum, Buff, Acc) ->
     case parse_buffer(FieldList,Buff, Acc) of
         {ok, NotParsed, NewAcc, Missing} ->
-            case gen_tcp:recv(Socket, Missing, Timeout) of
+            case ssl:recv(Socket, Missing, Timeout) of
                 {ok, Data} ->
                     recv_row_data(Socket, FieldList, Timeout, SeqNum+1,  <<NotParsed/binary, Data/binary>>, NewAcc);
                 {error, Reason} ->

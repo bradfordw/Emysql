@@ -1,8 +1,7 @@
-%% Copyright (c) 2009-2012
-%% Bill Warnecke <bill@rupture.com>,
-%% Jacob Vorreuter <jacob.vorreuter@gmail.com>,
-%% Henning Diedrich <hd2010@eonblast.com>,
-%% Eonblast Corporation <http://www.eonblast.com>
+%% Copyright (c) 2009-2012 Bill Warnecke <bill@rupture.com>, Jacob
+%% Vorreuter <jacob.vorreuter@gmail.com>, Henning Diedrich
+%% <hd2010@eonblast.com>, Eonblast Corporation
+%% <http://www.eonblast.com>
 %%
 %% Permission is  hereby  granted,  free of charge,  to any person
 %% obtaining  a copy of this software and associated documentation
@@ -34,53 +33,22 @@
         test_connection/2, need_test_connection/1
 ]).
 
--include("emysql.hrl").
-
-%% MYSQL COMMANDS
--define(COM_SLEEP, 16#00).
--define(COM_QUIT, 16#01).
--define(COM_INIT_DB, 16#02).
--define(COM_QUERY, 16#03).
--define(COM_FIELD_LIST, 16#04).
--define(COM_CREATE_DB, 16#05).
--define(COM_DROP_DB, 16#06).
--define(COM_REFRESH, 16#07).
--define(COM_SHUTDOWN, 16#08).
--define(COM_STATISTICS, 16#09).
--define(COM_PROCESS_INFO, 16#0a).
--define(COM_CONNECT, 16#0b).
--define(COM_PROCESS_KILL, 16#0c).
--define(COM_DEBUG, 16#0d).
--define(COM_PING, 16#0e).
--define(COM_TIME, 16#0f).
--define(COM_DELAYED_INSERT, 16#10).
--define(COM_CHANGE_USER, 16#11).
--define(COM_BINLOG_DUMP, 16#12).
--define(COM_TABLE_DUMP, 16#13).
--define(COM_CONNECT_OUT, 16#14).
--define(COM_REGISTER_SLAVE, 16#15).
--define(COM_STMT_PREPARE, 16#16).
--define(COM_STMT_EXECUTE, 16#17).
--define(COM_STMT_SEND_LONG_DATA, 16#18).
--define(COM_STMT_CLOSE, 16#19).
--define(COM_STMT_RESET, 16#1a).
--define(COM_SET_OPTION, 16#1b).
--define(COM_STMT_FETCH, 16#1c).
+-include("../include/emysql.hrl").
 
 set_database(_, undefined) -> ok;
 set_database(_, Empty) when Empty == ""; Empty == <<>> -> ok;
 set_database(Connection, Database) ->
     Packet = <<?COM_QUERY, "use `", (iolist_to_binary(Database))/binary, "`">>,  % todo: utf8?
-    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+    apply(Connection#emysql_connection.socket_module,send_and_recv_packet,[Connection#emysql_connection.socket, Packet, 0]).
 
 set_encoding(_, undefined) -> ok;
 set_encoding(Connection, {Encoding, Collation}) ->
     Packet = <<?COM_QUERY, "set names '", (erlang:atom_to_binary(Encoding, utf8))/binary, 
         "' collate '", (erlang:atom_to_binary(Collation, utf8))/binary,"'">>,
-    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0);
+    apply(Connection#emysql_connection.socket_module, send_and_recv_packet, [Connection#emysql_connection.socket, Packet, 0]);
 set_encoding(Connection, Encoding) ->
     Packet = <<?COM_QUERY, "set names '", (erlang:atom_to_binary(Encoding, utf8))/binary, "'">>,
-    emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+    apply(Connection#emysql_connection.socket_module, send_and_recv_packet, [Connection#emysql_connection.socket, Packet, 0]).
 
 %% @todo This can go away once the underlying socket accepts IOData
 canonicalize_query(Q) when is_binary(Q) -> Q;
@@ -181,10 +149,11 @@ open_connections(Pool) ->
         false ->
             {ok, Pool}
     end.
-
 open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
-        password=Password, database=Database, encoding=Encoding,
-                      start_cmds=StartCmds, connect_timeout=ConnectTimeout} = Pool) ->
+                      password=Password, database=Database, encoding=Encoding,
+                      start_cmds=StartCmds, connect_timeout=ConnectTimeout,
+                      cacertfile=undefined
+                     } = Pool) ->
      %-% io:format("~p open connection for pool ~p host ~p port ~p user ~p base ~p~n", [self(), PoolId, Host, Port, User, Database]),
      %-% io:format("~p open connection: ... connect ... ~n", [self()]),
     case gen_tcp:connect(Host, Port, [binary, {packet, raw}, {active, false}, {recbuf, ?TCP_RECV_BUFFER}], ConnectTimeout) of
@@ -206,7 +175,8 @@ open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
                             language = Language,
                             test_period = Pool#pool.conn_test_period,
                             last_test_time = now_seconds(),
-                            warnings = Pool#pool.warnings
+                            warnings = Pool#pool.warnings,
+                            socket_module = emysql_tcp
                            },
             %%-% io:format("~p open connection: ... set db ...~n", [self()]),
             ok = set_database_or_die(Connection, Database),
@@ -215,9 +185,66 @@ open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
             ok = give_manager_control(Sock),
             Connection;
         {error, Reason} ->
-             %-% io:format("~p open connection: ... ERROR ~p~n", [self(), Reason]),
-             %-% io:format("~p open connection: ... exit with failed_to_connect_to_database~n", [self()]),
+             error_logger:error_msg("~p open connection: ... ERROR ~p~n", [self(), Reason]),
+             error_logger:error_msg("~p open connection: ... exit with failed_to_connect_to_database~n", [self()]),
             exit({failed_to_connect_to_database, Reason})
+    end;
+open_connection(#pool{pool_id=PoolId, host=Host, port=Port, user=User,
+                      password=Password, database=Database, encoding=Encoding,
+                      start_cmds=StartCmds, connect_timeout=ConnectTimeout,
+                      cacertfile=_CACertFile} = Pool) ->
+    %%error_logger:info_msg("~p open connection for pool ~p host ~p port ~p user ~p base ~p [SSL: cacertfile ~p]~n", [self(), PoolId, Host, Port, User, Database, CACertFile]),
+    %%error_logger:info_msg("~p open connection: ... connect ... ~n", [self()]),
+    case gen_tcp:connect(Host, Port, [binary, {active, false}, {packet, raw}, {recbuf, ?TCP_RECV_BUFFER}], ConnectTimeout) of
+        {ok, TCPSock} ->
+            io:format("~p tcpsock : ~p~n", [self(), TCPSock]),
+            inet:setopts(TCPSock, [{active, false}]),
+            #greeting {
+               server_version = Version,
+               thread_id = ThreadId,
+               caps = Caps,
+               language = Language,
+               upgraded_socket = SSLSock
+              } = handshake(TCPSock, User, Password, Pool),
+            ConnId = assign_id(SSLSock),
+            Connection = #emysql_connection{
+                            id = ConnId,
+                            pool_id = PoolId,
+                            encoding = Encoding,
+                            socket = SSLSock,
+                            version = Version,
+                            thread_id = ThreadId,
+                            caps = Caps,
+                            language = Language,
+                            test_period = Pool#pool.conn_test_period,
+                            last_test_time = now_seconds(),
+                            warnings = Pool#pool.warnings,
+                            socket_module = emysql_ssl
+                           },
+            %%error_logger:info_msg("~p open connection: ... set db ...~n", [self()]),
+            ok = set_database_or_die(Connection, Database),
+            ok = set_encoding_or_die(Connection, Encoding),
+            ok = run_startcmds_or_die(Connection, StartCmds),
+            ok = give_manager_control(SSLSock),
+            Connection;
+        {error, Reason} ->
+            error_logger:error_msg("~p open connection (tcp): ... ERROR ~p~n", [self(), Reason]),
+            error_logger:error_msg("~p open connection (tcp): ... exit with failed_to_connect_to_database~n", [self()]),
+            exit({failed_to_connect_to_database, Reason})
+    end.
+
+assign_id({sslsocket,{gen_tcp,Port,tls_connection},_Pid}) ->
+    erlang:port_to_list(Port);
+assign_id(Other) ->
+    error_logger:warning_msg("Unknown Socket Type :: ~p,~n",[Other]),
+    exit({unable_to_assign_id, unknown_socket}).    
+
+handshake(Sock, User, Password, Pool) ->
+    case emysql_auth:ssl_handshake(Sock, User, Password, Pool) of
+        {ok, #greeting{} = G} -> G;
+        {error, Reason} ->
+            ssl:close(Sock),
+            exit(Reason)
     end.
 
 handshake(Sock, User, Password) ->
@@ -305,11 +332,32 @@ reset_connection(Pools, Conn, StayLocked) ->
 add_monitor_ref(Conn, MonitorRef) ->
     Conn#emysql_connection{monitor_ref = MonitorRef}.
 
+close_connection(#emysql_connection{socket= {sslsocket,_,_}}=Conn) ->
+	%% garbage collect statements
+	emysql_statements:remove(Conn#emysql_connection.id),
+	ok = ssl:close(Conn#emysql_connection.socket);
 close_connection(Conn) ->
 	%% garbage collect statements
 	emysql_statements:remove(Conn#emysql_connection.id),
 	ok = gen_tcp:close(Conn#emysql_connection.socket).
 
+test_connection(#emysql_connection{socket={sslsocket,_,_}}=Conn, StayLocked) ->
+  case catch emysql_ssl:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
+    {'EXIT', _} ->
+      case reset_connection(emysql_conn_mgr:pools(), Conn, StayLocked) of
+        NewConn when is_record(NewConn, emysql_connection) ->
+          NewConn;
+        {error, FailedReset} ->
+          exit({connection_down, {and_conn_reset_failed, FailedReset}})
+      end;
+    _ ->
+       NewConn = Conn#emysql_connection{last_test_time = now_seconds()},
+       case StayLocked of
+         pass -> emysql_conn_mgr:replace_connection_as_available(Conn, NewConn);
+         keep -> emysql_conn_mgr:replace_connection_as_locked(Conn, NewConn)
+       end,
+       NewConn
+  end;
 test_connection(Conn, StayLocked) ->
   case catch emysql_tcp:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
     {'EXIT', _} ->
@@ -342,11 +390,21 @@ now_seconds() ->
 %%--------------------------------------------------------------------
 
 %% @doc A wrapper for emysql_tcp:send_and_recv_packet/3 that may log warnings if any.
+send_recv(#emysql_connection{socket = {sslsocket, _, _}=Socket, warnings = Warnings}, Packet) ->
+    Ret = emysql_ssl:send_and_recv_packet(Socket, Packet, 0),
+    Warnings andalso log_warnings(Socket, Ret),
+    Ret;
 send_recv(#emysql_connection{socket = Socket, warnings = Warnings}, Packet) ->
     Ret = emysql_tcp:send_and_recv_packet(Socket, Packet, 0),
     Warnings andalso log_warnings(Socket, Ret),
     Ret.
 
+log_warnings({sslsocket, _, _}=Socket, #ok_packet{warning_count = WarningCount}) when WarningCount > 0 ->
+    %% Fetch the warnings and log them in the OTP way.
+    #result_packet{rows = WarningRows} =
+        emysql_ssl:send_and_recv_packet(Socket, <<?COM_QUERY, "SHOW WARNINGS">>, 0),
+    WarningMessages = [Message || [_Level, _Code, Message] <- WarningRows],
+    error_logger:warning_report({emysql_warnings, WarningMessages});
 log_warnings(Socket, #ok_packet{warning_count = WarningCount}) when WarningCount > 0 ->
     %% Fetch the warnings and log them in the OTP way.
     #result_packet{rows = WarningRows} =

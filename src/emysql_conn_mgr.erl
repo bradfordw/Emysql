@@ -79,10 +79,10 @@ wait_for_connection(PoolId)->
 wait_for_connection(PoolId ,Timeout)->
     %% try to lock a connection. if no connections are available then
     %% wait to be notified of the next available connection
-    %-% io:format("~p waits for connection to pool ~p~n", [self(), PoolId]),
+    error_logger:info_msg("~p waits for connection to pool ~p~n", [self(), PoolId]),
     case do_gen_call({lock_connection, PoolId, true, self()}) of
         unavailable ->
-            %-% io:format("~p is queued~n", [self()]),
+            error_logger:info_msg("~p is queued~n", [self()]),
             receive
                 {connection, Connection} -> Connection
             after Timeout ->
@@ -94,7 +94,7 @@ wait_for_connection(PoolId ,Timeout)->
                 end
             end;
         Connection ->
-            %-% io:format("~p gets connection~n", [self()]),
+            error_logger:info_msg("~p gets connection~n", [self()]),
             Connection
     end.
 
@@ -107,6 +107,11 @@ replace_connection_as_available(OldConn, NewConn) ->
 replace_connection_as_locked(OldConn, NewConn) ->
     do_gen_call({{replace_connection, locked}, OldConn, NewConn}).
 
+give_manager_control({sslsocket, _, _}=Socket) ->
+	case whereis(?MODULE) of
+		undefined -> {error ,failed_to_find_conn_mgr};
+		MgrPid -> ssl:controlling_process(Socket, MgrPid)
+	end;
 give_manager_control(Socket) ->
 	case whereis(?MODULE) of
 		undefined -> {error ,failed_to_find_conn_mgr};
@@ -137,16 +142,16 @@ do_gen_call(Msg) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
-    Pools = lists:map(
-        fun (Pool1) ->
-                case emysql_conn:open_connections(Pool1) of
-                    {ok, Pool2} -> Pool2;
-                    {error, Reason} -> throw(Reason)
-                end
-        end,
-        initialize_pools()
-    ),
-    {ok, #state{pools=Pools}}.
+	Pools = lists:map(
+		  fun (Pool1) ->
+					  case emysql_conn:open_connections(Pool1) of
+						  {ok, Pool2} -> Pool2;
+						  {error, Reason} -> throw(Reason)
+					  end
+		  end,
+		  initialize_pools()
+		 ),
+	{ok, #state{pools=Pools}}.
 
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -369,11 +374,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 initialize_pools() ->
-    %% if the emysql application values are not present in the config
-    %% file we will initialize and empty set of pools. Otherwise, the
-    %% values defined in the config are used to initialize the state.
-    [
-        #pool{
+	%% if the emysql application values are not present in the config
+	%% file we will initialize and empty set of pools. Otherwise, the
+	%% values defined in the config are used to initialize the state.
+	[
+	 #pool{
             pool_id = PoolId,
             size = proplists:get_value(size, Props, 1),
             user = proplists:get_value(user, Props),
@@ -382,9 +387,10 @@ initialize_pools() ->
             port = proplists:get_value(port, Props),
             database = proplists:get_value(database, Props),
             encoding = proplists:get_value(encoding, Props),
-            start_cmds = proplists:get_value(start_cmds, Props, [])
-        } || {PoolId, Props} <- emysql_app:pools()
-    ].
+            start_cmds = proplists:get_value(start_cmds, Props, []),
+	    cacertfile = proplists:get_value(cacertfile, Props, undefined)
+	   } || {PoolId, Props} <- emysql_app:pools()
+	].
 
 find_pool(PoolId, Pools) ->
     find_pool(PoolId, Pools, []).

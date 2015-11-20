@@ -30,9 +30,9 @@
 %% @private
 -module(emysql_auth).
 
--export([handshake/3]).
+-export([ssl_handshake/4, handshake/3]).
 
--include("emysql.hrl").
+-include("../include/emysql.hrl").
 -include("emysql_internal.hrl").
 
 -include("crypto_compat.hrl").
@@ -42,6 +42,21 @@
 
 %% handshake/3 runs the low-level handshake code upon connection initiation
 %% @private
+
+ssl_handshake(Sock, User, Password, Pool) ->
+    {Packet, Unparsed} = emysql_tcp:recv_packet(Sock, emysql_app:default_timeout(), <<>>),
+    case parse_greeting(Packet) of
+        {ok, #greeting { seq_num = SeqNum } = Greeting} ->
+            {ok, {Auth, Greeting1}} = ssl_auth(Sock, User, Password, Greeting#greeting { seq_num = SeqNum + 1 }, Pool),
+            check_handshake_auth(Auth, Greeting1);
+        {error, wrong_parse} ->
+            {#error_packet{ code = Code, msg = Msg},_, _Rest} =
+                emysql_tcp:parse_response(Sock, emysql_app:default_timeout(), Packet, Unparsed),
+            {error, {Code, Msg}};
+        {greeting_failed, What} ->
+            {error, {greeting_failed, What}}
+    end.
+
 handshake(Sock, User, Password) ->
     {Packet, Unparsed} = emysql_tcp:recv_packet(Sock, emysql_app:default_timeout(), <<>>),
     case parse_greeting(Packet) of
@@ -59,6 +74,14 @@ handshake(Sock, User, Password) ->
 %% Internal functions
 %% -----------------------------------------------------------------
 
+ssl_auth_packet() ->
+    Caps = capabilities([
+                         ?LONG_PASSWORD , ?CLIENT_LOCAL_FILE, ?LONG_FLAG, ?TRANSACTIONS,
+                         ?CLIENT_MULTI_STATEMENTS, ?CLIENT_MULTI_RESULTS, ?PROTOCOL_41, 
+                         ?SECURE_CONNECTION, ?CLIENT_SSL]),
+    Maxsize = ?MAXPACKETBYTES,
+    <<Caps:32/little, Maxsize:32/little, 8:8, 0:23/integer-unit:8>>.
+
 check_handshake_auth(#ok_packet{}, Greeting) -> {ok, Greeting};
 check_handshake_auth(#error_packet{} = Err, _Greeting) -> {error, {auth_fail, Err}}.
 
@@ -75,6 +98,7 @@ build_greeting(stage2, D, G) ->
              ServerCapsHigh:16/little,
              ScrambleLength:8/little,_:10/binary-unit:8,
              Rest/binary>>} = asciiz(D),
+
     Salt2Length = case ScrambleLength of
                       0 -> 13;
                       K -> K - 8
@@ -103,17 +127,18 @@ parse_greeting(#packet { data = <<ProtocolVersion:8/integer, Rest1/binary>>, seq
     {ok, G};
 parse_greeting(#packet { data = What }) ->
     {greeting_failed, What}.
-   
+
 
 %% password_type/2 discriminates the kind of password we want
 password_type(Password, ?MYSQL_OLD_PASSWORD) when is_list(Password); is_binary(Password) -> old;
 password_type(Password, _) when is_list(Password); is_binary(Password) -> new;
 password_type(_, _) -> empty.
 
+    
 %% capabilities/0 formats a list of capabilities for the wire
 capabilities(Cs) ->
     lists:foldl(fun erlang:'bor'/2, 0, Cs).
-
+   
 %% auth_packet/3 constructs a normal authentication packet
 auth_packet(User, Password,
             #greeting { salt1 = Salt1,
@@ -141,6 +166,19 @@ auth_packet_old(Password, #greeting { salt1 = Salt1 }) ->
     <<AuthOld/binary, 0:8>>.
 
 %% auth/4 handles authentication inside the system.
+ssl_auth(Sock, User, Password, #greeting { seq_num = SeqNum } = Greeting, Pool) ->
+    ok = emysql_tcp:send_packet(Sock, ssl_auth_packet(), SeqNum),
+    SSLSock = emysql_tcp:upgrade_to_ssl(Sock, Pool),
+    Packet = auth_packet(User, Password, Greeting),
+    case emysql_ssl:send_and_recv_packet(SSLSock, Packet, SeqNum+1) of
+        #eof_packet{seq_num = EofSeqNum} ->
+            PacketOld = auth_packet_old(Password, Greeting),
+            emysql_ssl:send_and_recv_packet(Sock, PacketOld, EofSeqNum+1);
+        Result ->
+            Greeting1 = Greeting#greeting{upgraded_socket=SSLSock},
+            {ok, {Result, Greeting1}}
+    end.
+
 auth(Sock, User, Password, #greeting { seq_num = SeqNum } = Greeting) ->
     Packet = auth_packet(User, Password, Greeting),
     case emysql_tcp:send_and_recv_packet(Sock, Packet, SeqNum) of
