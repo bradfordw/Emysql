@@ -400,6 +400,7 @@ send_recv(#emysql_connection{socket = Socket, warnings = Warnings}, Packet) ->
 
 log_warnings({sslsocket, _, _}=Socket, #ok_packet{warning_count = WarningCount}) when WarningCount > 0 ->
     %% Fetch the warnings and log them in the OTP way.
+
     #result_packet{rows = WarningRows} =
         emysql_ssl:send_and_recv_packet(Socket, <<?COM_QUERY, "SHOW WARNINGS">>, 0),
     WarningMessages = [Message || [_Level, _Code, Message] <- WarningRows],
@@ -414,9 +415,9 @@ log_warnings(_Sock, _OtherPacket) ->
     ok.
 
 set_params(_, _, [], Result) -> Result;
-set_params(Connection, Num, Values, _) ->
+set_params(#emysql_connection{socket_module=SocketModule}=Connection, Num, Values, _) ->
 	Packet = set_params_packet(Num, Values),
-	emysql_tcp:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
+	apply(SocketModule,send_and_recv_packet, [Connection#emysql_connection.socket, Packet, 0]).
 
 set_params_packet(NumStart, Values) ->
 	BinValues = [encode(Val, binary) || Val <- Values],
