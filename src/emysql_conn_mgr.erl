@@ -388,7 +388,8 @@ initialize_pools() ->
             database = proplists:get_value(database, Props),
             encoding = proplists:get_value(encoding, Props),
             start_cmds = proplists:get_value(start_cmds, Props, []),
-	    cacertfile = proplists:get_value(cacertfile, Props, undefined)
+	    cacertfile = proplists:get_value(cacertfile, Props, undefined),
+	    ciphers = proplists:get_value(ciphers, Props, ssl:cipher_suites())
 	   } || {PoolId, Props} <- emysql_app:pools()
 	].
 

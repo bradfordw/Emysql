@@ -38,7 +38,8 @@ upgrade_to_ssl(Sock, Pool) ->
     inet:setopts(Sock, [{active, false}]),
     case ssl:connect(Sock, [
                             {versions, [tlsv1]},
-                            {ciphers, ssl:cipher_suites(openssl)},
+                            %% {ciphers, ssl:cipher_suites(openssl)},
+                            {ciphers, Pool#pool.ciphers},
                             {verify, verify_peer},
                             {cacertfile, Pool#pool.cacertfile},
                             {active, false}

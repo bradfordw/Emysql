@@ -41,7 +41,8 @@
 	       conn_test_period=0 :: number(), 
 	       connect_timeout=infinity :: number() | infinity,
 	       warnings=false :: boolean(),
-               cacertfile :: file:filename() | 'undefined'}).
+               cacertfile :: file:filename() | 'undefined',
+               ciphers=ssl:ciphers_suites() :: ssl:ciphers()}).
 
 -record(emysql_connection, {id :: string(), 
 			    pool_id :: atom(), 
@@ -59,6 +60,7 @@
 			    monitor_ref :: reference(),
 			    warnings=false :: boolean(),
                             cacertfile=undefined :: file:filename() | 'undefined',
+                            ciphers=ssl:cipher_suites() :: ssl:ciphers(),
                             socket_module :: atom()}).
 
 -record(greeting, {protocol_version :: number(), 
@@ -72,7 +74,7 @@
                    status :: number(), 
                    seq_num :: number(), 
                    plugin :: binary(),
-                   upgraded_socket}).
+                   upgraded_socket :: ssl:socket()}).
 
 -record(field, {seq_num :: number(), 
                 catalog :: binary(), 

@@ -267,11 +267,13 @@ add_pool(PoolId, Options) when is_list(Options) ->
     ConnectTimeout = proplists:get_value(connect_timeout, Options, infinity),
     Warnings = proplists:get_value(warnings, Options, false),
     CACertFile = proplists:get_value(cacertfile, Options, undefined),
+    Ciphers = proplists:get_value(ciphers, Options, ssl:cipher_suites()),
     add_pool(#pool{pool_id=PoolId,size=Size, user=User, password=Password,
                    host=Host, port=Port, database=Database,
                    encoding=Encoding, start_cmds=StartCmds, 
                    connect_timeout=ConnectTimeout, warnings=Warnings,
-                   cacertfile=CACertFile}).
+                   cacertfile=CACertFile,
+                   ciphers=Ciphers}).
 
 add_pool(#pool{pool_id=PoolId}=Pool)->
     config_ok(Pool),
