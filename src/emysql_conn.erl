@@ -37,18 +37,18 @@
 
 set_database(_, undefined) -> ok;
 set_database(_, Empty) when Empty == ""; Empty == <<>> -> ok;
-set_database(Connection, Database) ->
+set_database(#emysql_connection{socket_module=SocketModule}=Connection, Database) ->
     Packet = <<?COM_QUERY, "use `", (iolist_to_binary(Database))/binary, "`">>,  % todo: utf8?
-    apply(Connection#emysql_connection.socket_module,send_and_recv_packet,[Connection#emysql_connection.socket, Packet, 0]).
+    SocketModule:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
 
 set_encoding(_, undefined) -> ok;
-set_encoding(Connection, {Encoding, Collation}) ->
+set_encoding(#emysql_connection{socket_module=SocketModule}=Connection, {Encoding, Collation}) ->
     Packet = <<?COM_QUERY, "set names '", (erlang:atom_to_binary(Encoding, utf8))/binary, 
         "' collate '", (erlang:atom_to_binary(Collation, utf8))/binary,"'">>,
-    apply(Connection#emysql_connection.socket_module, send_and_recv_packet, [Connection#emysql_connection.socket, Packet, 0]);
-set_encoding(Connection, Encoding) ->
+    SocketModule:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0);
+set_encoding(#emysql_connection{socket_module=SocketModule}=Connection, Encoding) ->
     Packet = <<?COM_QUERY, "set names '", (erlang:atom_to_binary(Encoding, utf8))/binary, "'">>,
-    apply(Connection#emysql_connection.socket_module, send_and_recv_packet, [Connection#emysql_connection.socket, Packet, 0]).
+    SocketModule:send_and_recv_packet(Connection#emysql_connection.socket, Packet, 0).
 
 %% @todo This can go away once the underlying socket accepts IOData
 canonicalize_query(Q) when is_binary(Q) -> Q;
@@ -257,7 +257,7 @@ handshake(Sock, User, Password) ->
 give_manager_control(Socket) ->
     case emysql_conn_mgr:give_manager_control(Socket) of
         {error, Reason} ->
-            gen_tcp:close(Socket),
+            socket_close(Socket),
             exit({Reason,
                  "Failed to find conn mgr when opening connection. Make sure crypto is started and emysql.app is in the Erlang path."});
         ok -> ok
@@ -268,19 +268,19 @@ set_database_or_die(#emysql_connection { socket = Socket } = Connection, Databas
         ok -> ok;
         OK1 when is_record(OK1, ok_packet) -> ok;
         Err1 when is_record(Err1, error_packet) ->
-             gen_tcp:close(Socket),
+             socket_close(Socket),
              exit({failed_to_set_database, Err1#error_packet.msg})
     end.
 
-run_startcmds_or_die(#emysql_connection{socket=Socket}, StartCmds) ->
+run_startcmds_or_die(#emysql_connection{socket_module=SocketModule, socket=Socket}, StartCmds) ->
     lists:foreach(
         fun(Cmd) ->
                 Packet = <<?COM_QUERY, Cmd/binary>>,
-                case emysql_tcp:send_and_recv_packet(Socket, Packet, 0) of
+                case SocketModule:send_and_recv_packet(Socket, Packet, 0) of
                     OK when OK =:= ok orelse is_record(OK, ok_packet) ->
                         ok;
                     #error_packet{msg=Msg} ->
-                        gen_tcp:close(Socket),
+                        socket_close(Socket),
                         exit({failed_to_run_cmd, Msg})
                 end
         end,
@@ -292,7 +292,7 @@ set_encoding_or_die(#emysql_connection { socket = Socket } = Connection, Encodin
         ok -> ok;
         OK2 when is_record(OK2, ok_packet) -> ok;
         Err2 when is_record(Err2, error_packet) ->
-            gen_tcp:close(Socket),
+            socket_close(Socket),
             exit({failed_to_set_encoding, Err2#error_packet.msg})
     end.
  
@@ -331,34 +331,13 @@ reset_connection(Pools, Conn, StayLocked) ->
 add_monitor_ref(Conn, MonitorRef) ->
     Conn#emysql_connection{monitor_ref = MonitorRef}.
 
-close_connection(#emysql_connection{socket= {sslsocket,_,_}}=Conn) ->
-	%% garbage collect statements
-	emysql_statements:remove(Conn#emysql_connection.id),
-	ok = ssl:close(Conn#emysql_connection.socket);
 close_connection(Conn) ->
-	%% garbage collect statements
-	emysql_statements:remove(Conn#emysql_connection.id),
-	ok = gen_tcp:close(Conn#emysql_connection.socket).
+    %% garbage collect statements
+    emysql_statements:remove(Conn#emysql_connection.id),
+    ok = socket_close(Conn#emysql_connection.socket).
 
-test_connection(#emysql_connection{socket={sslsocket,_,_}}=Conn, StayLocked) ->
-  case catch emysql_ssl:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
-    {'EXIT', _} ->
-      case reset_connection(emysql_conn_mgr:pools(), Conn, StayLocked) of
-        NewConn when is_record(NewConn, emysql_connection) ->
-          NewConn;
-        {error, FailedReset} ->
-          exit({connection_down, {and_conn_reset_failed, FailedReset}})
-      end;
-    _ ->
-       NewConn = Conn#emysql_connection{last_test_time = now_seconds()},
-       case StayLocked of
-         pass -> emysql_conn_mgr:replace_connection_as_available(Conn, NewConn);
-         keep -> emysql_conn_mgr:replace_connection_as_locked(Conn, NewConn)
-       end,
-       NewConn
-  end;
-test_connection(Conn, StayLocked) ->
-  case catch emysql_tcp:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
+test_connection(#emysql_connection{socket_module=SocketModule, socket={sslsocket,_,_}}=Conn, StayLocked) ->
+  case catch SocketModule:send_and_recv_packet(Conn#emysql_connection.socket, <<?COM_PING>>, 0) of
     {'EXIT', _} ->
       case reset_connection(emysql_conn_mgr:pools(), Conn, StayLocked) of
         NewConn when is_record(NewConn, emysql_connection) ->
@@ -374,7 +353,6 @@ test_connection(Conn, StayLocked) ->
        end,
        NewConn
   end.
-
 need_test_connection(Conn) ->
    (Conn#emysql_connection.test_period =:= 0) orelse
      (Conn#emysql_connection.last_test_time =:= 0) orelse
@@ -389,18 +367,13 @@ now_seconds() ->
 %%--------------------------------------------------------------------
 
 %% @doc A wrapper for emysql_tcp:send_and_recv_packet/3 that may log warnings if any.
-send_recv(#emysql_connection{socket = {sslsocket, _, _}=Socket, warnings = Warnings}, Packet) ->
-    Ret = emysql_ssl:send_and_recv_packet(Socket, Packet, 0),
-    Warnings andalso log_warnings(Socket, Ret),
-    Ret;
-send_recv(#emysql_connection{socket = Socket, warnings = Warnings}, Packet) ->
-    Ret = emysql_tcp:send_and_recv_packet(Socket, Packet, 0),
+send_recv(#emysql_connection{socket_module = SocketModule, socket = Socket, warnings = Warnings}, Packet) ->
+    Ret = SocketModule:send_and_recv_packet(Socket, Packet, 0),
     Warnings andalso log_warnings(Socket, Ret),
     Ret.
 
 log_warnings({sslsocket, _, _}=Socket, #ok_packet{warning_count = WarningCount}) when WarningCount > 0 ->
     %% Fetch the warnings and log them in the OTP way.
-
     #result_packet{rows = WarningRows} =
         emysql_ssl:send_and_recv_packet(Socket, <<?COM_QUERY, "SHOW WARNINGS">>, 0),
     WarningMessages = [Message || [_Level, _Code, Message] <- WarningRows],
@@ -562,3 +535,10 @@ quote_loop([26 | Rest], Acc) ->
 
 quote_loop([C | Rest], Acc) ->
     quote_loop(Rest, [C | Acc]).
+
+socket_close({sslsocket, _,_}=Socket) ->
+    ssl:close(Socket);
+socket_close(Socket) ->
+    gen_tcp:close(Socket).
+
+
