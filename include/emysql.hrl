@@ -117,7 +117,7 @@
 			field_list :: list(),
 			rows, extra}).
 
--define(TIMEOUT, 8000).
+-define(TIMEOUT, 80000).
 -define(LOCK_TIMEOUT, 5000).
 -define(MAXPACKETBYTES, 50000000).
 -define(LONG_PASSWORD, 1).
